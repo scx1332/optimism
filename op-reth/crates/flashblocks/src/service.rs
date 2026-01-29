@@ -1,6 +1,7 @@
 use crate::{
     cache::SequenceManager,
     pending_state::PendingStateRegistry,
+    tx_cache::TransactionCache,
     validation::ReconciliationStrategy,
     worker::{BuildResult, FlashBlockBuilder},
     FlashBlock, FlashBlockCompleteSequence, FlashBlockCompleteSequenceRx, InProgressFlashBlockRx,
@@ -71,6 +72,15 @@ pub struct FlashBlockService<
     sequences: SequenceManager<N::SignedTx>,
     /// Registry for pending block states to enable speculative building.
     pending_states: PendingStateRegistry<N>,
+    /// Transaction execution cache for incremental flashblock building.
+    tx_cache: TransactionCache<N>,
+
+    /// Epoch counter for state invalidation.
+    ///
+    /// Incremented whenever speculative state is cleared (reorg, catch-up, depth limit).
+    /// Used to detect and discard stale build results from in-flight jobs that were
+    /// started before the state was invalidated.
+    state_epoch: u64,
 
     /// Maximum depth for pending blocks ahead of canonical before clearing.
     max_depth: u64,
@@ -115,6 +125,8 @@ where
             job: None,
             sequences: SequenceManager::new(compute_state_root),
             pending_states: PendingStateRegistry::new(),
+            tx_cache: TransactionCache::new(),
+            state_epoch: 0,
             max_depth: DEFAULT_MAX_DEPTH,
             metrics: FlashBlockServiceMetrics::default(),
         }
@@ -181,14 +193,45 @@ where
         loop {
             tokio::select! {
                 // Event 1: job exists, listen to job results
-                Some(result) = async {
+                // Handle both successful results and channel errors (e.g., task panic)
+                job_result = async {
                     match self.job.as_mut() {
-                        Some((_, rx)) => rx.await.ok(),
+                        Some(job) => Some((&mut job.result_rx).await),
                         None => std::future::pending().await,
                     }
                 } => {
-                    let (start_time, _) = self.job.take().unwrap();
+                    let job = self.job.take().unwrap();
                     let _ = self.in_progress_tx.send(None);
+
+                    // Handle channel error (task panicked or was cancelled)
+                    let Some(Ok((result, returned_cache))) = job_result else {
+                        warn!(
+                            target: "flashblocks",
+                            "Build job channel closed unexpectedly (task may have panicked)"
+                        );
+                        // Re-initialize transaction cache since we lost the one sent to the task
+                        self.tx_cache = TransactionCache::new();
+                        continue;
+                    };
+
+                    // Check if the state epoch has changed since this job started.
+                    // If so, the speculative state has been invalidated (e.g., by a reorg)
+                    // and we should discard the build result AND the returned cache to avoid
+                    // reintroducing stale state that was cleared during reconciliation.
+                    if job.epoch != self.state_epoch {
+                        trace!(
+                            target: "flashblocks",
+                            job_epoch = job.epoch,
+                            current_epoch = self.state_epoch,
+                            "Discarding stale build result and cache (state was invalidated)"
+                        );
+                        self.metrics.stale_builds_discarded.increment(1);
+                        // Don't restore the returned cache - keep the cleared cache from reconciliation
+                        continue;
+                    }
+
+                    // Restore the transaction cache from the spawned task (only if epoch matched)
+                    self.tx_cache = returned_cache;
 
                     match result {
                         Ok(Some(build_result)) => {
@@ -200,7 +243,7 @@ where
                             // Record pending state for speculative building of subsequent blocks
                             self.pending_states.record_build(build_result.pending_state);
 
-                            let elapsed = start_time.elapsed();
+                            let elapsed = job.start_time.elapsed();
                             self.metrics.execution_duration.record(elapsed.as_secs_f64());
 
                             let _ = tx.send(Some(pending));
@@ -275,7 +318,8 @@ where
             self.metrics.reorg_count.increment(1);
         }
 
-        // Clear pending states for strategies that invalidate speculative state
+        // Clear pending states and transaction cache for strategies that invalidate speculative
+        // state. Also increment the state epoch to invalidate any in-flight build jobs.
         if matches!(
             strategy,
             ReconciliationStrategy::HandleReorg |
@@ -283,6 +327,14 @@ where
                 ReconciliationStrategy::DepthLimitExceeded { .. }
         ) {
             self.pending_states.clear();
+            self.tx_cache.clear();
+            self.state_epoch = self.state_epoch.wrapping_add(1);
+            trace!(
+                target: "flashblocks",
+                new_epoch = self.state_epoch,
+                ?strategy,
+                "State invalidated, incremented epoch"
+            );
         }
     }
 
@@ -336,12 +388,17 @@ where
         self.metrics.current_index.set(fb_info.index as f64);
         let _ = self.in_progress_tx.send(Some(fb_info));
 
-        let (tx, rx) = oneshot::channel();
+        // Take ownership of the transaction cache for the spawned task
+        let mut tx_cache = std::mem::take(&mut self.tx_cache);
+
+        let (result_tx, result_rx) = oneshot::channel();
         let builder = self.builder.clone();
         self.spawner.spawn_blocking(Box::pin(async move {
-            let _ = tx.send(builder.execute(args));
+            let result = builder.execute(args, Some(&mut tx_cache));
+            let _ = result_tx.send((result, tx_cache));
         }));
-        self.job = Some((Instant::now(), rx));
+        self.job =
+            Some(BuildJob { start_time: Instant::now(), epoch: self.state_epoch, result_rx });
     }
 }
 
@@ -356,7 +413,20 @@ pub struct FlashBlockBuildInfo {
     pub block_number: u64,
 }
 
-type BuildJob<N> = (Instant, oneshot::Receiver<eyre::Result<Option<BuildResult<N>>>>);
+/// A running build job with metadata for tracking and invalidation.
+#[derive(Debug)]
+struct BuildJob<N: NodePrimitives> {
+    /// When the job was started.
+    start_time: Instant,
+    /// The state epoch when this job was started.
+    ///
+    /// If the service's `state_epoch` has changed by the time this job completes,
+    /// the result should be discarded as the speculative state has been invalidated.
+    epoch: u64,
+    /// Receiver for the build result and returned transaction cache.
+    #[allow(clippy::type_complexity)]
+    result_rx: oneshot::Receiver<(eyre::Result<Option<BuildResult<N>>>, TransactionCache<N>)>,
+}
 
 /// Creates a bounded channel for canonical block notifications.
 ///
@@ -383,4 +453,6 @@ struct FlashBlockServiceMetrics {
     current_index: Gauge,
     /// Number of reorgs detected during canonical block reconciliation.
     reorg_count: Counter,
+    /// Number of build results discarded due to state invalidation (reorg during build).
+    stale_builds_discarded: Counter,
 }

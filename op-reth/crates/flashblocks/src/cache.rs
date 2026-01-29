@@ -1065,42 +1065,6 @@ mod tests {
     }
 
     #[test]
-    fn test_get_transaction_hashes_for_pending_block() {
-        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
-        let factory = TestFlashBlockFactory::new();
-
-        // Create flashblock without transactions (empty tx list is valid)
-        let fb0 = factory.flashblock_at(0).build();
-        manager.insert_flashblock(fb0).unwrap();
-
-        // Should find (empty) transaction hashes for block 100
-        let hashes = manager.get_transaction_hashes_for_block(100);
-        assert!(hashes.is_empty()); // No transactions in this flashblock
-    }
-
-    #[test]
-    fn test_get_transaction_hashes_for_cached_block() {
-        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
-        let factory = TestFlashBlockFactory::new();
-
-        // Create first flashblock for block 100
-        let fb0 = factory.flashblock_at(0).build();
-        manager.insert_flashblock(fb0.clone()).unwrap();
-
-        // Create second flashblock for block 101 (caches block 100)
-        let fb1 = factory.flashblock_for_next_block(&fb0).build();
-        manager.insert_flashblock(fb1).unwrap();
-
-        // Should find transaction hashes for cached block 100
-        let hashes = manager.get_transaction_hashes_for_block(100);
-        assert!(hashes.is_empty()); // No transactions in these flashblocks
-
-        // Should find transaction hashes for pending block 101
-        let hashes = manager.get_transaction_hashes_for_block(101);
-        assert!(hashes.is_empty()); // No transactions in these flashblocks
-    }
-
-    #[test]
     fn test_no_false_reorg_for_untracked_block() {
         let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
         let factory = TestFlashBlockFactory::new();
@@ -1154,5 +1118,41 @@ mod tests {
         // State should be cleared
         assert!(manager.pending().block_number().is_none());
         assert!(manager.completed_cache.is_empty());
+    }
+
+    #[test]
+    fn test_get_transaction_hashes_for_pending_block() {
+        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
+        let factory = TestFlashBlockFactory::new();
+
+        // Create flashblock without transactions (empty tx list is valid)
+        let fb0 = factory.flashblock_at(0).build();
+        manager.insert_flashblock(fb0).unwrap();
+
+        // Should find (empty) transaction hashes for block 100
+        let hashes = manager.get_transaction_hashes_for_block(100);
+        assert!(hashes.is_empty()); // No transactions in this flashblock
+    }
+
+    #[test]
+    fn test_get_transaction_hashes_for_cached_block() {
+        let mut manager: SequenceManager<OpTxEnvelope> = SequenceManager::new(true);
+        let factory = TestFlashBlockFactory::new();
+
+        // Create first flashblock for block 100
+        let fb0 = factory.flashblock_at(0).build();
+        manager.insert_flashblock(fb0.clone()).unwrap();
+
+        // Create second flashblock for block 101 (caches block 100)
+        let fb1 = factory.flashblock_for_next_block(&fb0).build();
+        manager.insert_flashblock(fb1).unwrap();
+
+        // Should find transaction hashes for cached block 100
+        let hashes = manager.get_transaction_hashes_for_block(100);
+        assert!(hashes.is_empty()); // No transactions in these flashblocks
+
+        // Should find transaction hashes for pending block 101
+        let hashes = manager.get_transaction_hashes_for_block(101);
+        assert!(hashes.is_empty()); // No transactions in these flashblocks
     }
 }

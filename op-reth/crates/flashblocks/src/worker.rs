@@ -1,4 +1,4 @@
-use crate::{pending_state::PendingBlockState, PendingFlashBlock};
+use crate::{pending_state::PendingBlockState, tx_cache::TransactionCache, PendingFlashBlock};
 use alloy_eips::{eip2718::WithEncoded, BlockNumberOrTag};
 use alloy_primitives::B256;
 use op_alloy_rpc_types_engine::OpFlashblockPayloadBase;
@@ -10,7 +10,8 @@ use reth_evm::{
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_primitives_traits::{
-    AlloyBlockHeader, BlockTy, HeaderTy, NodePrimitives, ReceiptTy, Recovered,
+    transaction::TxHashRef, AlloyBlockHeader, BlockTy, HeaderTy, NodePrimitives, ReceiptTy,
+    Recovered,
 };
 use reth_revm::{cached::CachedReads, database::StateProviderDatabase, db::State};
 use reth_rpc_eth_types::{EthApiError, PendingBlock};
@@ -81,12 +82,17 @@ where
     /// 1. **Canonical mode**: Parent matches local tip - uses state from storage
     /// 2. **Speculative mode**: Parent is a pending block - uses pending state
     ///
+    /// When a `tx_cache` is provided and we're in canonical mode, the builder will
+    /// attempt to resume from cached state if the transaction list is a continuation
+    /// of what was previously executed.
+    ///
     /// Returns `None` if:
     /// - In canonical mode: flashblock doesn't attach to the latest header
     /// - In speculative mode: no pending parent state provided
     pub(crate) fn execute<I: IntoIterator<Item = WithEncoded<Recovered<N::SignedTx>>>>(
         &self,
         mut args: BuildArgs<I, N>,
+        tx_cache: Option<&mut TransactionCache<N>>,
     ) -> eyre::Result<Option<BuildResult<N>>> {
         trace!(target: "flashblocks", "Attempting new pending block from flashblocks");
 
@@ -109,6 +115,10 @@ where
             );
             return Ok(None);
         }
+
+        // Collect transactions and extract hashes for cache lookup
+        let transactions: Vec<_> = args.transactions.into_iter().collect();
+        let tx_hashes: Vec<B256> = transactions.iter().map(|tx| *tx.tx_hash()).collect();
 
         // Get state provider - either from storage or pending state
         // For speculative builds, use the canonical anchor hash (not the pending parent hash)
@@ -146,15 +156,45 @@ where
 
         let cached_db = request_cache.as_db_mut(StateProviderDatabase::new(&state_provider));
 
-        // Build state - for speculative builds, initialize with the pending parent's bundle as
-        // prestate
+        // NOTE on transaction caching:
+        // We intentionally do NOT use cached bundle state as a prestate for canonical builds.
+        // The cached bundle represents state AFTER executing transactions, so using it as
+        // prestate and re-executing the same transactions would cause failures (nonce already
+        // incremented, balance already deducted, etc.).
+        //
+        // The cache is still updated after builds (for future checkpointing support), but
+        // currently only provides logging information about cache hits.
+        //
+        // Future optimization: reth would need to support "block builder checkpointing" to
+        // properly resume partial builds by skipping already-executed transactions AND
+        // reconstructing the block body from cached data.
+        if is_canonical &&
+            let Some(cache) = tx_cache.as_ref() &&
+            let Some((_, _, cached_count)) =
+                cache.get_resumable_state(args.base.block_number, &tx_hashes)
+        {
+            trace!(
+                target: "flashblocks",
+                cached_tx_count = cached_count,
+                total_txs = tx_hashes.len(),
+                "Cache hit (prestate not used - all txs will be re-executed)"
+            );
+        }
+
+        // Build state with appropriate prestate
+        // Only speculative builds use bundle prestate (parent block's execution output)
         let mut state = if let Some(ref pending) = args.pending_parent {
+            // Speculative mode - pending parent's bundle as prestate
+            // This is correct because we're building a NEW block on top of the parent,
+            // not re-executing the same transactions
             State::builder()
                 .with_database(cached_db)
                 .with_bundle_prestate(pending.execution_outcome.state.clone())
                 .with_bundle_update()
                 .build()
         } else {
+            // Canonical mode - fresh build from database state
+            // We don't use cached bundle as prestate since we're re-executing the same txs
             State::builder().with_database(cached_db).with_bundle_update().build()
         };
 
@@ -165,7 +205,9 @@ where
 
         builder.apply_pre_execution_changes()?;
 
-        for tx in args.transactions {
+        // Execute all transactions - we cannot skip any because BlockBuilder requires
+        // all transactions to be executed to include them in the block body
+        for tx in transactions {
             let _gas_used = builder.execute_transaction(tx)?;
         }
 
@@ -178,8 +220,23 @@ where
                 builder.finish(NoopProvider::default())?
             };
 
-        let execution_outcome =
-            BlockExecutionOutput { state: state.take_bundle(), result: execution_result };
+        // Take the bundle before creating execution_outcome (for cache update)
+        let bundle = state.take_bundle();
+
+        // Update transaction cache if provided (only in canonical mode)
+        // Cache the bundle state and receipts for potential reuse as prestate
+        if let Some(cache) = tx_cache &&
+            is_canonical
+        {
+            cache.update(
+                args.base.block_number,
+                tx_hashes,
+                bundle.clone(),
+                execution_result.receipts.clone(),
+            );
+        }
+
+        let execution_outcome = BlockExecutionOutput { state: bundle, result: execution_result };
         let execution_outcome = Arc::new(execution_outcome);
 
         // Create pending state for subsequent builds
