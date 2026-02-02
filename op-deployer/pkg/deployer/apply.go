@@ -267,6 +267,7 @@ func Apply(ctx context.Context, cfg ApplyConfig) error {
 		PreStateBuilder:    cfg.PreStateBuilder,
 		UseForge:           cfg.UseForge,
 		PrivateKey:         cfg.PrivateKey,
+		Workdir:            cfg.Workdir,
 	}); err != nil {
 		return err
 	}
@@ -291,6 +292,7 @@ type ApplyPipelineOpts struct {
 	PreStateBuilder    pipeline.PreStateBuilder
 	UseForge           bool
 	PrivateKey         string
+	Workdir            string
 }
 
 func ApplyPipeline(
@@ -436,8 +438,12 @@ func ApplyPipeline(
 	// Initialize Forge client if UseForge flag is enabled
 	var forgeClient *forge.Client
 	if opts.UseForge {
-		artifactsPath := fmt.Sprintf("%v", bundle.L1)
-		forgeClient, err = forge.NewStandardClient(artifactsPath)
+		// Use workdir if available, otherwise fall back to artifacts path string representation
+		workdirForForge := opts.Workdir
+		if workdirForForge == "" {
+			workdirForForge = fmt.Sprintf("%v", bundle.L1)
+		}
+		forgeClient, err = forge.NewStandardClient(workdirForForge)
 		if err != nil {
 			return fmt.Errorf("failed to create Forge client: %w", err)
 		}

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/ethereum-optimism/optimism/op-deployer/pkg/deployer/artifacts"
 )
 
 type ioStruct struct {
@@ -175,4 +177,166 @@ func projDir(t *testing.T) string {
 	absProjDir, err := filepath.Abs(dir)
 	require.NoError(t, err)
 	return absProjDir
+}
+
+func TestNewStandardClient_UniqueDirectories(t *testing.T) {
+	// Create a temporary directory to use as workdir
+	workdir := t.TempDir()
+
+	// Create multiple clients and verify they get unique build output directories
+	client1, err := NewStandardClient(workdir)
+	require.NoError(t, err)
+	defer os.RemoveAll(client1.buildOutDir)
+
+	client2, err := NewStandardClient(workdir)
+	require.NoError(t, err)
+	defer os.RemoveAll(client2.buildOutDir)
+
+	client3, err := NewStandardClient(workdir)
+	require.NoError(t, err)
+	defer os.RemoveAll(client3.buildOutDir)
+
+	// All should share the same working directory (workdir)
+	absWorkdir, err := filepath.Abs(workdir)
+	require.NoError(t, err)
+	require.Equal(t, absWorkdir, client1.Wd)
+	require.Equal(t, absWorkdir, client2.Wd)
+	require.Equal(t, absWorkdir, client3.Wd)
+
+	// But build output directories should be unique
+	require.NotEqual(t, client1.buildOutDir, client2.buildOutDir)
+	require.NotEqual(t, client1.buildOutDir, client3.buildOutDir)
+	require.NotEqual(t, client2.buildOutDir, client3.buildOutDir)
+
+	// All build directories should exist
+	require.DirExists(t, client1.buildOutDir)
+	require.DirExists(t, client2.buildOutDir)
+	require.DirExists(t, client3.buildOutDir)
+}
+
+func TestNewStandardClient_WithValidWorkdir(t *testing.T) {
+	// Create a temporary directory to use as workdir
+	workdir := t.TempDir()
+	testFile := filepath.Join(workdir, "test.txt")
+	require.NoError(t, os.WriteFile(testFile, []byte("test content"), 0644))
+
+	client, err := NewStandardClient(workdir)
+	require.NoError(t, err)
+	defer os.RemoveAll(client.buildOutDir)
+
+	// Client should use workdir directly as working directory
+	absWorkdir, err := filepath.Abs(workdir)
+	require.NoError(t, err)
+	require.Equal(t, absWorkdir, client.Wd)
+
+	// Verify we can access files in the working directory
+	workdirFile := filepath.Join(client.Wd, "test.txt")
+	require.FileExists(t, workdirFile)
+	content, err := os.ReadFile(workdirFile)
+	require.NoError(t, err)
+	require.Equal(t, []byte("test content"), content)
+
+	// Verify build output directory is unique and exists
+	require.NotEmpty(t, client.buildOutDir)
+	require.DirExists(t, client.buildOutDir)
+}
+
+func TestNewStandardClient_WithInvalidWorkdir(t *testing.T) {
+	// Test with invalid/non-existent workdir - should fail
+	_, err := NewStandardClient("/nonexistent/path")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "workdir does not exist or is not accessible")
+}
+
+func TestNewStandardClient_RegisteredForCleanup(t *testing.T) {
+	// Get initial count of registered directories
+	initialDirs := artifacts.GetCleanupDirs()
+	initialCount := len(initialDirs)
+
+	// Create a temporary directory to use as workdir
+	workdir := t.TempDir()
+
+	// Create a client
+	client, err := NewStandardClient(workdir)
+	require.NoError(t, err)
+	defer os.RemoveAll(client.buildOutDir)
+
+	// Check that the build directory was registered
+	registeredDirs := artifacts.GetCleanupDirs()
+	require.Greater(t, len(registeredDirs), initialCount)
+
+	// Verify our build directory is in the list
+	found := false
+	for _, dir := range registeredDirs {
+		if dir == client.buildOutDir {
+			found = true
+			break
+		}
+	}
+	require.True(t, found, "Client build output directory should be registered for cleanup")
+}
+
+func TestCopyArtifactsDir(t *testing.T) {
+	// Create source directory with nested structure
+	srcDir := t.TempDir()
+
+	// Create nested directories and files
+	subDir := filepath.Join(srcDir, "subdir")
+	require.NoError(t, os.MkdirAll(subDir, 0755))
+
+	file1 := filepath.Join(srcDir, "file1.txt")
+	file2 := filepath.Join(subDir, "file2.txt")
+
+	require.NoError(t, os.WriteFile(file1, []byte("content1"), 0644))
+	require.NoError(t, os.WriteFile(file2, []byte("content2"), 0644))
+
+	// Copy to destination
+	dstDir := t.TempDir()
+	require.NoError(t, copyArtifactsDir(srcDir, dstDir))
+
+	// Verify structure was copied
+	require.DirExists(t, dstDir)
+	require.FileExists(t, filepath.Join(dstDir, "file1.txt"))
+	require.DirExists(t, filepath.Join(dstDir, "subdir"))
+	require.FileExists(t, filepath.Join(dstDir, "subdir", "file2.txt"))
+
+	// Verify content
+	content1, err := os.ReadFile(filepath.Join(dstDir, "file1.txt"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("content1"), content1)
+
+	content2, err := os.ReadFile(filepath.Join(dstDir, "subdir", "file2.txt"))
+	require.NoError(t, err)
+	require.Equal(t, []byte("content2"), content2)
+}
+
+func TestNewStandardClient_ParallelInstances(t *testing.T) {
+	// Test that multiple parallel instances don't conflict
+	const numInstances = 10
+
+	// Create a temporary directory to use as workdir
+	workdir := t.TempDir()
+	absWorkdir, err := filepath.Abs(workdir)
+	require.NoError(t, err)
+
+	clients := make([]*Client, numInstances)
+	buildDirs := make(map[string]bool)
+
+	for i := 0; i < numInstances; i++ {
+		client, err := NewStandardClient(workdir)
+		require.NoError(t, err)
+		clients[i] = client
+		defer os.RemoveAll(client.buildOutDir)
+
+		// All instances should share the same working directory
+		require.Equal(t, absWorkdir, client.Wd)
+
+		// But build output directories should be unique
+		require.False(t, buildDirs[client.buildOutDir], "Build directory should be unique: %s", client.buildOutDir)
+		buildDirs[client.buildOutDir] = true
+		require.DirExists(t, client.buildOutDir)
+	}
+
+	// All build directories should be different
+	require.Len(t, buildDirs, numInstances)
 }
