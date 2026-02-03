@@ -276,40 +276,6 @@ func TestNewStandardClient_RegisteredForCleanup(t *testing.T) {
 	require.True(t, found, "Client build output directory should be registered for cleanup")
 }
 
-func TestCopyArtifactsDir(t *testing.T) {
-	// Create source directory with nested structure
-	srcDir := t.TempDir()
-
-	// Create nested directories and files
-	subDir := filepath.Join(srcDir, "subdir")
-	require.NoError(t, os.MkdirAll(subDir, 0755))
-
-	file1 := filepath.Join(srcDir, "file1.txt")
-	file2 := filepath.Join(subDir, "file2.txt")
-
-	require.NoError(t, os.WriteFile(file1, []byte("content1"), 0644))
-	require.NoError(t, os.WriteFile(file2, []byte("content2"), 0644))
-
-	// Copy to destination
-	dstDir := t.TempDir()
-	require.NoError(t, copyArtifactsDir(srcDir, dstDir))
-
-	// Verify structure was copied
-	require.DirExists(t, dstDir)
-	require.FileExists(t, filepath.Join(dstDir, "file1.txt"))
-	require.DirExists(t, filepath.Join(dstDir, "subdir"))
-	require.FileExists(t, filepath.Join(dstDir, "subdir", "file2.txt"))
-
-	// Verify content
-	content1, err := os.ReadFile(filepath.Join(dstDir, "file1.txt"))
-	require.NoError(t, err)
-	require.Equal(t, []byte("content1"), content1)
-
-	content2, err := os.ReadFile(filepath.Join(dstDir, "subdir", "file2.txt"))
-	require.NoError(t, err)
-	require.Equal(t, []byte("content2"), content2)
-}
-
 func TestNewStandardClient_ParallelInstances(t *testing.T) {
 	// Test that multiple parallel instances don't conflict
 	const numInstances = 10

@@ -34,51 +34,6 @@ type Client struct {
 	buildOutDir string // Base directory containing unique build output subdirectories
 }
 
-// copyArtifactsDir recursively copies a directory from src to dst
-func copyArtifactsDir(src, dst string) error {
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return fmt.Errorf("failed to create destination directory: %w", err)
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return fmt.Errorf("failed to read source directory: %w", err)
-	}
-
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-
-		if entry.IsDir() {
-			if err := copyArtifactsDir(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			srcFile, err := os.Open(srcPath)
-			if err != nil {
-				return fmt.Errorf("failed to open source file: %w", err)
-			}
-
-			dstFile, err := os.Create(dstPath)
-			if err != nil {
-				srcFile.Close()
-				return fmt.Errorf("failed to create destination file: %w", err)
-			}
-
-			if _, err := io.Copy(dstFile, srcFile); err != nil {
-				srcFile.Close()
-				dstFile.Close()
-				return fmt.Errorf("failed to copy file: %w", err)
-			}
-
-			srcFile.Close()
-			dstFile.Close()
-		}
-	}
-
-	return nil
-}
-
 func NewStandardClient(workdir string) (*Client, error) {
 	forgeBinary, err := NewStandardBinary()
 	if err != nil {
@@ -108,35 +63,44 @@ func NewStandardClient(workdir string) (*Client, error) {
 		return nil, fmt.Errorf("failed to get absolute path for workdir: %w", err)
 	}
 
-	// Use the workdir directly as Forge's working directory
-	// Multiple instances can share the same source directory (read-only)
-	// Build outputs are isolated via --out and --cache-path flags
-	forgeClient.Wd = absWorkdir
-
-	// Create unique build output directories to avoid conflicts when multiple
-	// op-deployer instances run in parallel
+	// Create a unique working directory for this forge instance to avoid conflicts
+	// when multiple op-deployer instances run in parallel. We copy the entire
+	// bundle structure (including cache, artifacts/build-info, etc.) to this unique
+	// directory so that forge can use the cache properly (cache paths are relative
+	// to the working directory).
 	uuidBytes := make([]byte, 16)
 	if _, err := rand.Read(uuidBytes); err != nil {
 		return nil, fmt.Errorf("failed to generate unique ID: %w", err)
 	}
 	uuidStr := fmt.Sprintf("%x-%x-%x-%x-%x", uuidBytes[0:4], uuidBytes[4:6], uuidBytes[6:8], uuidBytes[8:10], uuidBytes[10:16])
-	uniqueBuildBaseDir := filepath.Join(os.TempDir(), "forge-build-"+uuidStr)
-	uniqueBuildOutDir := filepath.Join(uniqueBuildBaseDir, "out")
-	uniqueCacheDir := filepath.Join(uniqueBuildBaseDir, "cache")
-	if err := os.MkdirAll(uniqueBuildOutDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create unique build out dir: %w", err)
-	}
-	if err := os.MkdirAll(uniqueCacheDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create unique cache dir: %w", err)
+	uniqueWorkdir := filepath.Join(os.TempDir(), "forge-workdir-"+uuidStr)
+	if err := os.MkdirAll(uniqueWorkdir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create unique workdir: %w", err)
 	}
 
-	// Register build directory for cleanup
-	artifacts.RegisterForCleanup(uniqueBuildBaseDir)
+	// Copy the entire bundle structure to the unique working directory using copy-on-write
+	// This preserves timestamps and allows forge to use the cache properly since all paths
+	// (cache, artifacts/build-info, etc.) are relative to the working directory.
+	// Use cp -al: creates hard links for files (copy-on-write behavior)
+	// -a: archive mode (preserves permissions, timestamps, etc.)
+	// -l: create hard links instead of copying files
+	// The trailing "/." ensures we copy directory contents, not the directory itself
+	hardLinkCmd := exec.Command("cp", "-al", absWorkdir+"/.", uniqueWorkdir+"/")
+	if err := hardLinkCmd.Run(); err != nil {
+		return nil, fmt.Errorf("failed to copy bundle to unique workdir using hard links: %w", err)
+	}
 
-	// Store the build base directory for build output paths
-	forgeClient.buildOutDir = uniqueBuildBaseDir
+	// Use the unique workdir as Forge's working directory
+	forgeClient.Wd = uniqueWorkdir
+
+	// Setting buildOutDir makes all the cache hits to fail since the build output directory is not in the unique workdir.
+	forgeClient.buildOutDir = ""
+
+	artifacts.RegisterForCleanup(uniqueWorkdir)
+
 	fmt.Printf("Forge client working directory: %s\n", forgeClient.Wd)
-	fmt.Printf("Forge client build output directory: %s\n", uniqueBuildOutDir)
+	fmt.Printf("Forge client build output directory: %s (default: forge-artifacts/)\n", filepath.Join(uniqueWorkdir, "forge-artifacts"))
+	fmt.Printf("Forge client cache directory: %s\n", filepath.Join(uniqueWorkdir, "cache"))
 
 	return forgeClient, nil
 }
@@ -167,10 +131,10 @@ func (c *Client) Version(ctx context.Context) (VersionInfo, error) {
 
 func (c *Client) Build(ctx context.Context, opts ...string) error {
 	cliOpts := []string{"build"}
-	// Add unique build output directories to avoid conflicts
+	// Use unique build output directory within the unique workdir
+	// Cache is already in the workdir (cache/), so forge can use it properly
 	if c.buildOutDir != "" {
-		cliOpts = append(cliOpts, "--out", filepath.Join(c.buildOutDir, "out"))
-		cliOpts = append(cliOpts, "--cache-path", filepath.Join(c.buildOutDir, "cache"))
+		cliOpts = append(cliOpts, "--out", c.buildOutDir)
 	}
 	cliOpts = append(cliOpts, opts...)
 	return c.execCmd(ctx, io.Discard, io.Discard, cliOpts...)
@@ -184,10 +148,10 @@ func (c *Client) RunScript(ctx context.Context, script string, sig string, args 
 	buf := new(bytes.Buffer)
 	cliOpts := []string{"script"}
 	cliOpts = append(cliOpts, opts...)
-	// Add unique build output directories to avoid conflicts
+	// Use unique build output directory within the unique workdir
+	// Cache is already in the workdir (cache/), so forge can use it properly
 	if c.buildOutDir != "" {
-		cliOpts = append(cliOpts, "--out", filepath.Join(c.buildOutDir, "out"))
-		cliOpts = append(cliOpts, "--cache-path", filepath.Join(c.buildOutDir, "cache"))
+		cliOpts = append(cliOpts, "--out", c.buildOutDir)
 	}
 	cliOpts = append(cliOpts, "--sig", sig, script, "0x"+hex.EncodeToString(args))
 	if err := c.execCmd(ctx, buf, io.Discard, cliOpts...); err != nil {

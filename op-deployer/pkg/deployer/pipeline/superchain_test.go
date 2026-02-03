@@ -188,11 +188,11 @@ func TestDeploySuperchain_WithForge_ManualCall(t *testing.T) {
 		RecommendedProtocolVersion: params.ProtocolVersion(rollup.OPStackSupport),
 	}
 
-	output, _, err := deploySuperchain(ctx, input)
+	output, recompiled, err := deploySuperchain(ctx, input)
 	require.NoError(t, err)
-	// Note: recompiled may be true when using unique build directories for parallel execution isolation
-	// This is expected behavior - the test verifies the script runs successfully
 	require.NotNil(t, output)
+	// The script should not be recompiled - forge should use the pre-warmed cache
+	require.False(t, recompiled, "forge script should use pre-warmed cache and not recompile")
 
 	require.NotEqual(t, common.Address{}, output.SuperchainProxyAdmin)
 	require.NotEqual(t, common.Address{}, output.SuperchainConfigProxy)

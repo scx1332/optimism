@@ -12,6 +12,12 @@ copy-contract-artifacts:
     #!/bin/bash
     set -euo pipefail
 
+    # Ensure cache directory exists and is pre-warmed before creating tarball
+    # The justfile's forge-build already pre-warms the cache, but we verify it exists
+    if [ ! -d "../packages/contracts-bedrock/cache" ]; then
+        echo "Warning: cache directory not found, forge-build may not have pre-warmed it"
+    fi
+
     rm -f ./pkg/deployer/artifacts/forge-artifacts/artifacts.tzst
     go run ./pkg/deployer/artifacts/cmd/mktar \
         -base ../packages/contracts-bedrock \

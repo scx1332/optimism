@@ -32,10 +32,21 @@ forge-build *ARGS:
   @# - Providing a signature/args is not required for compilation; compilation happens before
   @#   argument validation and before execution. We still use `--skip-simulation` to guarantee
   @#   nothing runs in any case.
+  @# - We use `--cache-path cache` to store the cache in the project directory so it can be
+  @#   included in embedded artifacts, allowing tests and production to benefit from pre-warming.
+  @# - We pre-warm both Deploy.s.sol and DeploySuperchain.s.sol to ensure all commonly used
+  @#   scripts have their dependencies cached, avoiding recompilation in tests and production.
   @forge script "scripts/deploy/Deploy.s.sol" \
     --skip "/**/test/**" \
     --sig "idonotexist()" \
     --skip-simulation \
+    --cache-path cache \
+    2>/dev/null || true
+  @forge script "scripts/deploy/DeploySuperchain.s.sol" \
+    --skip "/**/test/**" \
+    --sig "idonotexist()" \
+    --skip-simulation \
+    --cache-path cache \
     2>/dev/null || true
 
 # Developer build command (faster).
