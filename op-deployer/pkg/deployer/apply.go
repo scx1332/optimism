@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"fmt"
 	"math/big"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -267,7 +268,6 @@ func Apply(ctx context.Context, cfg ApplyConfig) error {
 		PreStateBuilder:    cfg.PreStateBuilder,
 		UseForge:           cfg.UseForge,
 		PrivateKey:         cfg.PrivateKey,
-		Workdir:            cfg.Workdir,
 	}); err != nil {
 		return err
 	}
@@ -309,6 +309,8 @@ func ApplyPipeline(
 	if err != nil {
 		return fmt.Errorf("failed to download L1 artifacts: %w", err)
 	}
+	artifactsPath := fmt.Sprintf("%v", l1ArtifactsFS)
+	l1BundleDir := filepath.Dir(artifactsPath)
 
 	var l2ArtifactsFS foundry.StatDirFs
 	if intent.L1ContractsLocator.Equal(intent.L2ContractsLocator) {
@@ -438,12 +440,9 @@ func ApplyPipeline(
 	// Initialize Forge client if UseForge flag is enabled
 	var forgeClient *forge.Client
 	if opts.UseForge {
-		// Use workdir if available, otherwise fall back to artifacts path string representation
-		workdirForForge := opts.Workdir
-		if workdirForForge == "" {
-			workdirForForge = fmt.Sprintf("%v", bundle.L1)
-		}
-		forgeClient, err = forge.NewStandardClient(workdirForForge)
+		// Always use the bundle directory from downloaded artifacts
+		// The artifacts structure is consistent: bundle dir contains foundry.toml and forge-artifacts subdirectory
+		forgeClient, err = forge.NewStandardClient(l1BundleDir)
 		if err != nil {
 			return fmt.Errorf("failed to create Forge client: %w", err)
 		}
