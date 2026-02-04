@@ -30,6 +30,8 @@ type Config struct {
 	MessageExpiryWindow         uint64 // Message expiry window in seconds (default: 7 days)
 	MessageExpiryWindowExplicit bool   // True if explicitly set via flag
 	JWTSecretPath               string
+	AdminRPCAddr                string // Address for admin RPC server (empty = disabled)
+	AdminRPCPort                int    // Port for admin RPC server (default: 8546)
 	Version                     string
 	PollInterval                time.Duration // Interval for polling new blocks (default: 2s)
 	ValidationInterval          time.Duration // Interval for cross-chain validation (default: 500ms)
@@ -48,9 +50,9 @@ func (c *Config) Check() error {
 	if len(c.RollupConfigs) == 0 {
 		result = errors.Join(result, errors.New("at least one rollup config is required (use --networks or --rollup-configs)"))
 	}
-	// Admin API must be JWT protected.
-	if c.RPC.EnableAdmin && c.JWTSecretPath == "" {
-		result = errors.Join(result, errors.New("rpc.enable-admin requires admin.jwt-secret for authentication"))
+	// Admin RPC requires JWT secret for authentication.
+	if c.AdminRPCAddr != "" && c.JWTSecretPath == "" {
+		result = errors.Join(result, errors.New("admin.rpc.addr requires admin.jwt-secret for authentication"))
 	}
 	// Durations must be positive
 	if c.BackfillDuration <= 0 {
@@ -124,6 +126,8 @@ func NewConfig(ctx *cli.Context, version string) (*Config, error) {
 		MessageExpiryWindow:         uint64(messageExpiryWindow.Seconds()),
 		MessageExpiryWindowExplicit: ctx.IsSet(flags.MessageExpiryWindowFlag.Name),
 		JWTSecretPath:               ctx.String(flags.JWTSecretFlag.Name),
+		AdminRPCAddr:                ctx.String(flags.AdminRPCAddrFlag.Name),
+		AdminRPCPort:                ctx.Int(flags.AdminRPCPortFlag.Name),
 		Version:                     version,
 		PollInterval:                pollInterval,
 		ValidationInterval:          validationInterval,

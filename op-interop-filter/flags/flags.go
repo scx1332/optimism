@@ -59,10 +59,22 @@ var (
 		Usage: "Path to JWT secret key for admin RPC authentication. " +
 			"Keys are 32 bytes, hex encoded in a file. " +
 			"A new key will be generated if the file is missing. " +
-			"Required when rpc.enable-admin is set.",
+			"Required when admin.rpc.addr is set.",
 		EnvVars:   prefixEnvVars("ADMIN_JWT_SECRET"),
 		Value:     "",
 		TakesFile: true,
+	}
+	AdminRPCAddrFlag = &cli.StringFlag{
+		Name:    "admin.rpc.addr",
+		Usage:   "Address to bind admin RPC server. If empty, admin RPC is disabled.",
+		EnvVars: prefixEnvVars("ADMIN_RPC_ADDR"),
+		Value:   "",
+	}
+	AdminRPCPortFlag = &cli.IntFlag{
+		Name:    "admin.rpc.port",
+		Usage:   "Port to bind admin RPC server.",
+		EnvVars: prefixEnvVars("ADMIN_RPC_PORT"),
+		Value:   8546,
 	}
 	PollIntervalFlag = &cli.StringFlag{
 		Name:    "poll-interval",
@@ -89,6 +101,8 @@ var optionalFlags = []cli.Flag{
 	BackfillDurationFlag,
 	MessageExpiryWindowFlag,
 	JWTSecretFlag,
+	AdminRPCAddrFlag,
+	AdminRPCPortFlag,
 	PollIntervalFlag,
 	ValidationIntervalFlag,
 }
