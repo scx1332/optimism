@@ -58,7 +58,7 @@ services:
 
   kona-node:
     restart: unless-stopped
-    image: ${KONA_NODE_IMAGE:-ghcr.io/op-rs/kona/kona-node:latest}
+    image: ${KONA_NODE_IMAGE:-ghcr.io/ethereum-optimism/kona/kona-node:latest}
     depends_on:
       - prometheus
       - op-reth

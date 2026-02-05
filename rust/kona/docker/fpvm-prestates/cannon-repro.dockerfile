@@ -30,7 +30,7 @@ RUN git clone https://github.com/ethereum-optimism/optimism && \
 #            Build kona-client from local source               #
 ################################################################
 
-FROM ghcr.io/op-rs/kona/cannon-builder:0.3.0 AS client-build
+FROM ghcr.io/ethereum-optimism/kona/cannon-builder:0.3.0 AS client-build
 SHELL ["/bin/bash", "-c"]
 
 ARG CLIENT_BIN

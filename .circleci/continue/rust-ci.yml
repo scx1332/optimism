@@ -994,15 +994,14 @@ jobs:
           flags: unit
       - rust-save-build-cache: *kona-coverage-cache
 
-  # Kona Docs Build
-  kona-docs-build:
+  # Unified Rust Docs Build
+  rust-docs-build:
     docker:
       - image: <<pipeline.parameters.default_docker_image>>
     resource_class: xlarge
     steps:
       - utils/checkout-with-mise:
           checkout-method: blobless
-      - rust-prepare
       - run:
           name: Install Node.js and Bun
           command: |
@@ -1013,46 +1012,20 @@ jobs:
             echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> $BASH_ENV
       - run:
           name: Install dependencies and Playwright browsers
-          working_directory: rust/kona/docs
+          working_directory: rust/docs
           command: |
             bun i
             npx playwright install --with-deps chromium
       - run:
           name: Build Vocs documentation
-          working_directory: rust/kona/docs
+          working_directory: rust/docs
           no_output_timeout: 60m
           command: |
             bun run build
             echo "Vocs Build Complete"
       - store_artifacts:
-          path: rust/kona/docs/docs/dist
-          destination: kona-docs
-
-    # OP-Reth docs build
-  op-reth-docs-build:
-    docker:
-      - image: <<pipeline.parameters.default_docker_image>>
-    resource_class: xlarge
-    steps:
-      - utils/checkout-with-mise:
-          checkout-method: blobless
-      - run:
-          name: Install Node.js and Bun
-          command: |
-            curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-            sudo apt-get install -y nodejs
-            curl -fsSL https://bun.sh/install | bash
-            echo 'export BUN_INSTALL="$HOME/.bun"' >> $BASH_ENV
-            echo 'export PATH="$BUN_INSTALL/bin:$PATH"' >> $BASH_ENV
-      - run:
-          name: Build op-reth documentation
-          working_directory: rust/op-reth
-          no_output_timeout: 30m
-          command: |
-            just docs-build
-      - store_artifacts:
-          path: op-reth/docs/vocs/docs/dist
-          destination: op-reth-docs
+          path: rust/docs/docs/dist
+          destination: rust-docs
 
 
   # Kona Link Checker
@@ -1072,7 +1045,7 @@ jobs:
           name: Check links
           working_directory: rust/kona
           command: |
-            lychee --config ./lychee.toml --cache-exclude-status 429 '**/README.md' './docs/**/*.md' './docs/**/*.mdx' './docs/**/*.html' './docs/**/*.json' || true
+            lychee --config ./lychee.toml --cache-exclude-status 429 '**/README.md' || true
 
   # Kona Publish Prestate Artifacts
   kona-publish-prestate-artifacts:
@@ -1190,11 +1163,7 @@ workflows:
           context: *rust-ci-context
 
       # Docs build
-      - op-reth-docs-build:
-          context:
-            - circleci-repo-readonly-authenticated-github-token
-
-      - kona-docs-build:
+      - rust-docs-build:
           context:
             - circleci-repo-readonly-authenticated-github-token
 
