@@ -1,0 +1,118 @@
+name: Build binaries for deployment
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # Job 1: Create the release entry first
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          # We don't upload files here, just create the release wrapper
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Job 2: Build binaries in parallel and upload them to the existing release
+  build-and-upload:
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: op-batcher
+            binary: op-batcher
+            workdir: op-batcher
+            command: just op-batcher
+            bin_path: op-batcher/bin
+            language: go
+          - name: op-node
+            binary: op-node
+            workdir: op-node
+            command: just op-node
+            bin_path: op-node/bin
+            language: go
+          - name: op-proposer
+            binary: op-proposer
+            workdir: op-proposer
+            command: just op-proposer
+            bin_path: op-proposer/bin
+            language: go
+          - name: op-alt-da
+            binary: da-server
+            workdir: op-alt-da
+            command: just da-server
+            bin_path: op-alt-da/bin
+            language: go
+          - name: op-reth
+            binary: op-reth
+            workdir: rust/op-reth
+            command: just build
+            bin_path: rust/op-reth/target/release
+            language: rust
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.4'
+          cache: true
+
+      - name: Set up Rust
+        if: matrix.language == 'rust'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.94'
+
+      - name: Rust build cache
+        if: matrix.language == 'rust'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ matrix.workdir }}
+
+      - name: Install Just
+        run: |
+          curl -L https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+
+      - name: Get foundry cli
+        if: matrix.language == 'go'
+        run: |
+          set -x
+          curl -sL https://github.com/foundry-rs/foundry/releases/download/v1.5.1/foundry_v1.5.1_linux_amd64.tar.gz | tar -xz
+          sudo mv forge cast anvil chisel /usr/local/bin/
+          forge --version
+
+      - name: Build ${{ matrix.name }}
+        run: |
+          # Navigate to component directory and run specific build command
+          cd ${{ matrix.workdir }}
+          ${{ matrix.command }}
+
+      - name: Compress binary
+        run: |
+          # Define the output archive name
+          # Navigate to the binary directory
+          cd ${{ matrix.bin_path }}
+          tar -cJf "${{ github.workspace }}/arkiv-${{ matrix.binary }}-${{ github.ref_name }}-linux-amd64.tar.xz" ${{ matrix.binary }}
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: arkiv-${{ matrix.binary }}-*.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
