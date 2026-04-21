@@ -109,7 +109,7 @@ jobs:
           # Navigate to the binary directory
           bin_dir="${{ matrix.bin_path }}"
           if [ ! -d "$bin_dir" ]; then
-            bin_file=$(find "${{ github.workspace }}" -type f -path "*/target/release/${{ matrix.binary }}" | head -n 1)
+            bin_file=$(find "${{ github.workspace }}/rust" -type f -path "*/target/release/${{ matrix.binary }}" | head -n 1)
             if [ -z "$bin_file" ]; then
               echo "Could not find built binary: ${{ matrix.binary }}"
               exit 1
