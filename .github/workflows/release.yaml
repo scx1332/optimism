@@ -55,6 +55,12 @@ jobs:
             command: just da-server
             bin_path: op-alt-da/bin
             language: go
+          - name: op-deployer
+            binary: op-deployer
+            workdir: op-deployer
+            command: just build
+            bin_path: op-deployer/bin
+            language: go
           - name: op-reth
             binary: op-reth
             workdir: rust/op-reth
