@@ -2,6 +2,11 @@ import '../justfiles/go.just'
 
 build: build-contracts copy-contract-artifacts build-go
 
+build-release:
+    (cd ../packages/contracts-bedrock && forge build --skip "/**/test/**" --deny never)
+    just copy-contract-artifacts
+    just build-go
+
 test args='./...': build-contracts copy-contract-artifacts
     go test -v {{args}}
 
