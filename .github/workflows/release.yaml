@@ -58,7 +58,7 @@ jobs:
           - name: op-deployer
             binary: op-deployer
             workdir: op-deployer
-            command: (cd ../packages/contracts-bedrock && forge build --skip "/**/test/**" --deny never) && just copy-contract-artifacts && just build-go
+            command: just build-release
             bin_path: op-deployer/bin
             language: go
           - name: op-reth
